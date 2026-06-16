@@ -21,28 +21,28 @@
 
 本專案拒絕使用粗糙的單幀幾何閾值判斷，而是透過以下五大核心演算法架構，實現工業級、高穩定度的即時行為辨識：
 
-### 1. 🏎️ 異步非同步多執行緒架構 (Asynchronous Multi-threading)
+### 1.  異步非同步多執行緒架構 (Asynchronous Multi-threading)
 為確保即時監控系統（Live Monitor）的極致流暢度，系統採用了**雙執行緒分流設計**：
 * **主執行緒 (Main UI Thread)**：全速負責 RealSense 640x480 的影像擷取、MediaPipe 3D 骨架抽取、以及即時視窗 HUD 的渲染疊加，確保畫面維持高幀率不卡頓。
 * **AI 推理執行緒 (Background Inference Thread)**：當時序窗口集滿 30 影格時，系統會自動在背景開闢獨立執行緒執行 `model.predict()`（LSTM 深度學習推理）。此設計**成功避免了深度學習龐大算力造成的畫面凍結（Lag）與延遲**。
 
-### 2. 🎚️ 時域平滑濾波與去噪 (Temporal Smoothing Filter)
+### 2.  時域平滑濾波與去噪 (Temporal Smoothing Filter)
 針對 MediaPipe 在遠距離或特殊視角下可能產生的關節抖動（Jittering）痛點：
 * 系統導入 `collections.deque` 建構 **8 幀滑動時間視窗 (Sliding Window)**。
 * 即時對雙膝角度、左右膝差、髖深差及腳高差等 8 維特徵進行**滑動平均數與中位數平滑化處理**，在第一線將高頻噪訊與骨架局部抖動徹底消除。
 
-### 3. 🗳️ 穩定狀態多數決投票機制 (State Voting Mechanism)
+### 3.  穩定狀態多數決投票機制 (State Voting Mechanism)
 為防止背景雜訊、蚊子干擾或光線閃爍引發 AI 標籤在短時間內高頻率閃爍切換：
 * 系統內建容量為 **20 幀的行為狀態歷史快取快照**。
 * 每幀透過 `Counter().most_common(1)` 執行**多數決時序投票（Sliding Vote Filter）**。
 * 配合 **70% 的 AI 信心度防踩空門檻**，唯有當新動作在時間軸上具備足夠的持續性時才觸發狀態變更，實現極佳的標籤抗噪性。
 
-### 4. 📐 跨受試者標準化幾何特徵工程 (Normalized Geometric Features)
+### 4.  跨受試者標準化幾何特徵工程 (Normalized Geometric Features)
 傳統計算法常因「人站得離鏡頭太近/太遠」或「相機長寬比與解析度不同」導致辨識失效：
 * 本系統將軀幹垂直角、膝蓋夾角等特徵，直接於 MediaPipe 的 `0.0 ~ 1.0` 原始標準化比例空間（Normalized Coordinates）中進行 `arctan2` 幾何運算。
 * 特徵完全擺脫絕對像素長寬的依賴，使模型具備極強的**跨相機解析度泛化能力**與**跨人體體型適應力**。
 
-### 5. 🔮 深度感測容錯與多點中位數防禦 (Depth Sensor Fault Tolerance)
+### 5.  深度感測容錯與多點中位數防禦 (Depth Sensor Fault Tolerance)
 當房務人員在進行整床或蹲下時，手部常會短暫遮擋到大腿或髖部，導致 RealSense 紅外線深度光點局部遺失（產生黑洞點）：
 * 系統整合了**區域深度中位數選取（Region Depth Median Filter）**，主動向關鍵關節點周圍半徑 3 像素的區域進行深度採樣。
 * 透過取中位數排除極端黑洞值，若發生短暫且嚴重的深度遺失，系統亦具備預測維持機制，**防止 UI 面板數據在遮擋瞬間卡死或噴出無效值 (NaN)**。

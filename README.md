@@ -4,7 +4,7 @@
 
 ---
 
-## 🛠️ 技術棧與硬體需求 (Tech Stack & Hardware)
+## 🛠️ 技術與硬體需求 (Tech Stack & Hardware)
 - **硬體設備**: Intel RealSense 深度攝影機 (如 D435i / D415)
 - **核心語言**: Python 3.9+
 - **電腦視覺與 AI 庫**: 

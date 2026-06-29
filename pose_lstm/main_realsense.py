@@ -10,6 +10,7 @@ from datetime import datetime
 from collections import deque, Counter
 from tensorflow.keras.models import load_model
 from config import *
+import tensorflow as tf
 
 RECORD_MODE = False
 
@@ -81,9 +82,25 @@ frame_count   = 0
 if not RECORD_MODE:
     model_path = os.path.join(MODEL_DIR, 'best.h5')
     if os.path.exists(model_path):
-        model   = load_model(model_path)
         files   = [f for f in os.listdir(DATA_DIR) if f.endswith('.csv')]
         classes = sorted([f.split('.')[0] for f in files])
+        
+        from tensorflow.keras.models import Sequential
+        from tensorflow.keras.layers import LSTM, Dense, Dropout
+        
+        model = Sequential([
+            LSTM(units=64, return_sequences=True, input_shape=(N_TIME, 8)),
+            Dropout(0.2),
+            LSTM(units=64, return_sequences=True),
+            Dropout(0.2),
+            LSTM(units=64, return_sequences=True),
+            Dropout(0.2),
+            LSTM(units=64),
+            Dropout(0.2),
+            Dense(units=len(classes), activation='softmax')
+        ])
+        model.compile(optimizer='adam', loss='categorical_crossentropy', metrics=['accuracy'])
+        model.load_weights(model_path)
         print(f"🤖 模型載入成功！類別: {classes}")
     else:
         print("⚠️  找不到 best.h5，將以純規則模式執行")

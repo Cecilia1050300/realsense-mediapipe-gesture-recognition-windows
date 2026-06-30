@@ -205,13 +205,13 @@ def draw_hud(img, knee_angle, hip_depth_diff, knee_diff,
                     cv2.FONT_HERSHEY_SIMPLEX, 0.48, color, 1, cv2.LINE_AA)
 
     base_y = h - panel_h + 22
-    row("膝蓋角度 Knee Angle",   f"{knee_angle:.1f} deg", base_y,
+    row("Knee Angle",   f"{knee_angle:.1f} deg", base_y,
         (0,200,80) if knee_angle < 150 else None)
-    row("髖深差 Hip Depth Diff", f"{hip_depth_diff*100:.1f} cm",  base_y + 24,
+    row("Hip Depth Diff", f"{hip_depth_diff*100:.1f} cm",  base_y + 24,
         (0,200,255) if hip_depth_diff > 0.05 else None)
-    row("左右膝差 Knee Diff",    f"{knee_diff:.1f} deg",  base_y + 48,
+    row("Knee Diff",    f"{knee_diff:.1f} deg",  base_y + 48,
         (255,180,0) if knee_diff > 15 else None)
-    row("腳高差 Foot Height Diff",f"{foot_diff:.0f} px",   base_y + 72,
+    row("Foot Height Diff",f"{foot_diff:.0f} px",   base_y + 72,
         (255,100,100) if foot_diff > 40 else None)
 
     # 持續時間

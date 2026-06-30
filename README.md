@@ -1,62 +1,80 @@
-# RealSense + MediaPipe 房務/清潔作業行為即時姿態辨識系統
+# RealSense + MediaPipe 3D 手勢與動作辨識系統 (Windows 完全體版本)
 
-本專案利用 **Intel RealSense 深度相機** 與 **Google MediaPipe Pose** 骨架追蹤技術，針對清潔與房務人員常見的作業姿態進行即時（Real-time）分類與監測。系統透過平滑緩衝區機制降低環境雜訊，並在動作維持達指定時間後，自動透過 **MQTT 協定** 發送 JSON 格式的識別事件，可用於人體工學職業安全評估或自動化作業進度追蹤。
-
----
-
-## 🎯 辨識行為與幾何特徵定義
-
-系統目前支援以下四種核心狀態的動態與靜態辨識：
-
-| 狀態名稱 (`STATE`) | 實際清潔/房務動作 | 核心幾何演算法原理 |
-| :--- | :--- | :--- |
-| **`STANDING`** | 正常直立站立 | 雙腿平均膝蓋角度大於 $140^\circ$，且未觸發動態跨步。 |
-| **`SL_forward_stepping`** | 吸塵器作業（跨步） | **動態優先權最高**。監測到雙膝平均角度大於 $115^\circ$，且在滑動時間視窗內膝蓋角度的**標準差（波動度） $> 2.5$**。 |
-| **`squat`** | 收垃圾、撿拾物品（大彎腰下蹲） | 雙腿平均膝蓋角度 $< 140^\circ$（處於下蹲狀態），且透過肩膀與髖部中心點計算出之**軀幹傾斜角度（Torso Tilt） $\ge 25^\circ$**。 |
-| **`knee_propping`** | 鋪床作業（半蹲挺胸） | 雙腿平均膝蓋角度 $< 140^\circ$（處於下蹲狀態），但**軀幹傾斜角度（Torso Tilt） $< 25^\circ$**，保持上半身挺直直立。 |
+本專案專為 **Windows 10/11** 環境開發，結合 **Intel RealSense D435/D435i 深度相機** 與 **Google MediaPipe**，進行即時的 3D 骨架與關節點預測。並進一步透過 **LSTM（長短期記憶網路）** 深度學習模型，實現高準確度的即時動態手勢與動作辨識。
 
 ---
 
-## 🛠️ 核心功能與技術驅動亮點 (Technical Highlights)
+## 🚀 專案核心架構
 
-本專案拒絕使用粗糙的單幀幾何閾值判斷，而是透過以下五大核心演算法架構，實現工業級、高穩定度的即時行為辨識：
-
-### 1.  異步非同步多執行緒架構 (Asynchronous Multi-threading)
-為確保即時監控系統（Live Monitor）的極致流暢度，系統採用了**雙執行緒分流設計**：
-* **主執行緒 (Main UI Thread)**：全速負責 RealSense 640x480 的影像擷取、MediaPipe 3D 骨架抽取、以及即時視窗 HUD 的渲染疊加，確保畫面維持高幀率不卡頓。
-* **AI 推理執行緒 (Background Inference Thread)**：當時序窗口集滿 30 影格時，系統會自動在背景開闢獨立執行緒執行 `model.predict()`（LSTM 深度學習推理）。此設計**成功避免了深度學習龐大算力造成的畫面凍結（Lag）與延遲**。
-
-### 2.  時域平滑濾波與去噪 (Temporal Smoothing Filter)
-針對 MediaPipe 在遠距離或特殊視角下可能產生的關節抖動（Jittering）痛點：
-* 系統導入 `collections.deque` 建構 **8 幀滑動時間視窗 (Sliding Window)**。
-* 即時對雙膝角度、左右膝差、髖深差及腳高差等 8 維特徵進行**滑動平均數與中位數平滑化處理**，在第一線將高頻噪訊與骨架局部抖動徹底消除。
-
-### 3.  穩定狀態多數決投票機制 (State Voting Mechanism)
-為防止背景雜訊、蚊子干擾或光線閃爍引發 AI 標籤在短時間內高頻率閃爍切換：
-* 系統內建容量為 **20 幀的行為狀態歷史快取快照**。
-* 每幀透過 `Counter().most_common(1)` 執行**多數決時序投票（Sliding Vote Filter）**。
-* 配合 **70% 的 AI 信心度防踩空門檻**，唯有當新動作在時間軸上具備足夠的持續性時才觸發狀態變更，實現極佳的標籤抗噪性。
-
-### 4.  跨受試者標準化幾何特徵工程 (Normalized Geometric Features)
-傳統計算法常因「人站得離鏡頭太近/太遠」或「相機長寬比與解析度不同」導致辨識失效：
-* 本系統將軀幹垂直角、膝蓋夾角等特徵，直接於 MediaPipe 的 `0.0 ~ 1.0` 原始標準化比例空間（Normalized Coordinates）中進行 `arctan2` 幾何運算。
-* 特徵完全擺脫絕對像素長寬的依賴，使模型具備極強的**跨相機解析度泛化能力**與**跨人體體型適應力**。
-
-### 5.  深度感測容錯與多點中位數防禦 (Depth Sensor Fault Tolerance)
-當房務人員在進行整床或蹲下時，手部常會短暫遮擋到大腿或髖部，導致 RealSense 紅外線深度光點局部遺失（產生黑洞點）：
-* 系統整合了**區域深度中位數選取（Region Depth Median Filter）**，主動向關鍵關節點周圍半徑 3 像素的區域進行深度採樣。
-* 透過取中位數排除極端黑洞值，若發生短暫且嚴重的深度遺失，系統亦具備預測維持機制，**防止 UI 面板數據在遮擋瞬間卡死或噴出無效值 (NaN)**。
+```text
+realsense-mediapipe-gesture-recognition-windows/
+├── pose_lstm/
+│   ├── main_realsense.py    # 核心主程式：RealSense 影像串流 + MediaPipe 骨架提取 + LSTM 預測
+│   ├── train_lstm.py        # LSTM 模型訓練腳本
+│   ├── action_model.h5      # 已訓練完成的 LSTM 動作辨識模型權重檔
+│   └── data_collection.py   # 動作關鍵點數據收集工具
+├── .gitignore                # 排除 venv 虛擬環境與本機暫存檔
+└── README.md                 # 本說明文件
+```
 
 ---
 
-## ⚙️ 環境配置與依賴項
+## 🛠️ Windows 環境相容性與套件清單
 
-本專案在 Linux 系統（相容 X11/Xcb 顯示伺服器）下開發，需準備以下環境：
+為了確保 RealSense 驅動與 MediaPipe/TensorFlow 在 Windows 上的相容性，本專案已在以下環境完整測試通過。請遵循此版號組態進行安裝：
 
-### 1. 硬體需求
-* Intel RealSense 深度相機（如 D435, D435i, D455 等）
+- **作業系統**：Windows 10 / 11（64-bit）
+- **Python 版本**：Python 3.10.x（建議 3.10.11，最為穩定）
 
-### 2. 軟體套件安裝
-請使用 `pip` 安裝以下必要的 Python 套件：
+### 核心相容套件版號
+
+```text
+protobuf==3.20.3
+mediapipe==0.10.7
+tensorflow==2.13.0
+pyrealsense2==2.54.2.5684
+opencv-python==4.8.1.78
+```
+
+---
+
+## 💻 快速開始與執行步驟
+
+### 1. 建立並啟用 Python 3.10 虛擬環境
+
+打開 Windows PowerShell 或 Command Prompt，在專案根目錄下執行：
+
 ```bash
-pip install pyrealsense2 mediapipe opencv-python numpy
+python -m venv venv
+.\venv\Scripts\activate
+```
+
+### 2. 安裝核心相容套件
+
+```bash
+pip install --upgrade pip
+pip install protobuf==3.20.3
+pip install mediapipe==0.10.7
+pip install tensorflow==2.13.0
+pip install pyrealsense2
+pip install opencv-python
+```
+
+### 3. 啟動即時辨識系統
+
+確保 Intel RealSense 相機已透過 USB 3.0 插槽連接至電腦，然後進入核心資料夾執行主程式：
+
+```bash
+cd pose_lstm
+python main_realsense.py
+```
+
+---
+
+## 📊 深度學習模型（LSTM）設計說明
+
+本系統之動態動作辨識採用 **LSTM（Long Short-Term Memory）** 網路，能夠有效捕捉前後影格（Frames）之間的時間序列特徵（Temporal Features）：
+
+- **特徵提取（Feature Extraction）**：透過 MediaPipe Hands/Pose 獲取 3D 關節點座標 $(x, y, z)$ 與可信度（Visibility）。
+- **時序輸入（Sequence Input）**：以連續 30 影格（約 1 秒的動態過程）作為一個時間序列特徵向量。
+- **模型預測（Inference）**：將特徵矩陣送入 `action_model.h5` 進行 Softmax 分類，即時在 OpenCV 視窗上輸出目前辨識出的動作名稱與信心指數。

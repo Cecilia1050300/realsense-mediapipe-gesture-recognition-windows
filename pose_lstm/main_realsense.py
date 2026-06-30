@@ -5,14 +5,61 @@ import cv2
 import numpy as np
 import time
 import threading
+import json
 import pandas as pd
 from datetime import datetime
 from collections import deque, Counter
 from tensorflow.keras.models import load_model
 from config import *
 import tensorflow as tf
+import paho.mqtt.client as mqtt
 
 RECORD_MODE = False
+
+# ── MQTT 設定 ──────────────────────────────────────────────
+MQTT_BROKER = "172.23.16.1"
+MQTT_PORT = 1883
+MQTT_KEEPALIVE = 60
+TOPIC_CHECK = "hotelSOP/check/cam"
+TOPIC_POSE = "hotelSOP/pose/cam_id/mediapipe"
+CAM_ID = "mediapipe"
+HEARTBEAT_INTERVAL = 10  # 秒
+
+mqtt_client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
+
+def mqtt_connect():
+    try:
+        mqtt_client.connect(MQTT_BROKER, MQTT_PORT, MQTT_KEEPALIVE)
+        mqtt_client.loop_start()
+        print(f"📡 MQTT 已連線至 {MQTT_BROKER}:{MQTT_PORT}")
+    except Exception as e:
+        print(f"❌ MQTT 連線失敗: {e}")
+
+def send_heartbeat():
+    """背景執行緒：每 10 秒發送一次心跳包"""
+    while display_running:
+        payload = json.dumps({
+            "cam_id": CAM_ID,
+            "status": True
+        })
+        try:
+            mqtt_client.publish(TOPIC_CHECK, payload)
+        except Exception as e:
+            print(f"⚠️ 心跳包發送失敗: {e}")
+        time.sleep(HEARTBEAT_INTERVAL)
+
+def send_pose_result(pose_name):
+    """偵測到新動作時發送一次結果"""
+    payload = json.dumps({
+        "camId": CAM_ID,
+        "success_pose": True,
+        "timestamp": datetime.now().isoformat()
+    })
+    try:
+        mqtt_client.publish(TOPIC_POSE, payload)
+        print(f"📤 已發送動作結果: {pose_name} → {TOPIC_POSE}")
+    except Exception as e:
+        print(f"⚠️ 動作結果發送失敗: {e}")
 
 # ── 全域狀態 ──────────────────────────────────────────────
 current_state = "STANDING"
@@ -32,7 +79,7 @@ foot_height_diff_buf= deque(maxlen=SMOOTHING_WINDOW)
 lstm_feature_window = deque(maxlen=N_TIME)
 pose_history        = deque(maxlen=20)
 ai_predicted_label  = "None"
-ai_confidence       = 0.0          # ← 新增：儲存最高信心值
+ai_confidence       = 0.0
 
 classes = []
 model   = None
@@ -62,6 +109,13 @@ LABEL_COLORS = {
 # ==========================================================
 # 🚀 初始化
 # ==========================================================
+print("⏳ 初始化 MQTT ...")
+mqtt_connect()
+
+heartbeat_thread = threading.Thread(target=send_heartbeat)
+heartbeat_thread.daemon = True
+heartbeat_thread.start()
+
 print("⏳ 初始化 MediaPipe ...")
 mp_pose   = mp.solutions.pose
 pose_model = mp_pose.Pose(min_detection_confidence=0.5, min_tracking_confidence=0.5)
@@ -138,13 +192,11 @@ def calculate_angle(a, b, c):
 # 視覺化輔助函式
 # ==========================================================
 def draw_skeleton(img, lm, w, h, color=(0, 255, 128)):
-    """繪製骨架連線與關節點"""
     for (a, b) in MP_CONNECTIONS:
         pa = (int(lm[a.value].x * w), int(lm[a.value].y * h))
         pb = (int(lm[b.value].x * w), int(lm[b.value].y * h))
         if lm[a.value].visibility > 0.3 and lm[b.value].visibility > 0.3:
             cv2.line(img, pa, pb, color, 2, cv2.LINE_AA)
-    # 關節圓點
     key_joints = [
         mp_pose.PoseLandmark.LEFT_HIP,  mp_pose.PoseLandmark.RIGHT_HIP,
         mp_pose.PoseLandmark.LEFT_KNEE, mp_pose.PoseLandmark.RIGHT_KNEE,
@@ -159,7 +211,6 @@ def draw_skeleton(img, lm, w, h, color=(0, 255, 128)):
 
 
 def draw_angle_arc(img, vertex, angle_deg, radius=28, color=(255, 200, 0)):
-    """在膝蓋位置畫一個角度弧線"""
     start_angle = -int(angle_deg / 2)
     end_angle   =  int(angle_deg / 2)
     cv2.ellipse(img, vertex, (radius, radius), -90,
@@ -168,14 +219,11 @@ def draw_angle_arc(img, vertex, angle_deg, radius=28, color=(255, 200, 0)):
 
 def draw_hud(img, knee_angle, hip_depth_diff, knee_diff,
              foot_diff, detected_pose, confidence, duration):
-    """繪製半透明 HUD 面板"""
     h, w = img.shape[:2]
 
-    # ── 上方大標籤：辨識結果 ────────────────────────────
     label_color = LABEL_COLORS.get(detected_pose, (200, 200, 200))
     label_text  = detected_pose if detected_pose != "None" else "偵測中..."
 
-    # 半透明背景
     overlay = img.copy()
     cv2.rectangle(overlay, (0, 0), (w, 56), (20, 20, 20), -1)
     cv2.addWeighted(overlay, 0.6, img, 0.4, 0, img)
@@ -183,7 +231,6 @@ def draw_hud(img, knee_angle, hip_depth_diff, knee_diff,
     cv2.putText(img, label_text, (14, 42),
                 cv2.FONT_HERSHEY_DUPLEX, 1.3, label_color, 2, cv2.LINE_AA)
 
-    # 信心條（右上）
     bar_x, bar_y, bar_w, bar_h = w - 170, 10, 150, 18
     cv2.rectangle(img, (bar_x, bar_y), (bar_x + bar_w, bar_y + bar_h), (60, 60, 60), -1)
     filled = int(bar_w * confidence)
@@ -191,7 +238,6 @@ def draw_hud(img, knee_angle, hip_depth_diff, knee_diff,
     cv2.putText(img, f"{confidence*100:.0f}%", (bar_x + bar_w + 4, bar_y + 14),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.45, (200, 200, 200), 1, cv2.LINE_AA)
 
-    # ── 下方數值面板 ─────────────────────────────────────
     panel_h = 110
     overlay2 = img.copy()
     cv2.rectangle(overlay2, (0, h - panel_h), (w, h), (20, 20, 20), -1)
@@ -214,12 +260,10 @@ def draw_hud(img, knee_angle, hip_depth_diff, knee_diff,
     row("Foot Height Diff",f"{foot_diff:.0f} px",   base_y + 72,
         (255,100,100) if foot_diff > 40 else None)
 
-    # 持續時間
     if duration > 0:
         cv2.putText(img, f"持續 {duration:.1f}s", (w - 130, h - 10),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, (180, 180, 180), 1, cv2.LINE_AA)
 
-    # ── 按鍵提示 ─────────────────────────────────────────
     cv2.putText(img, "Q: 離開", (w - 85, 14),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.38, (120, 120, 120), 1, cv2.LINE_AA)
 
@@ -229,6 +273,9 @@ def draw_hud(img, knee_angle, hip_depth_diff, knee_diff,
 # ==========================================================
 cv2.namedWindow("ITRI Pose Monitor", cv2.WINDOW_NORMAL)
 cv2.resizeWindow("ITRI Pose Monitor", 800, 600)
+
+# 偵測動作清單（排除 STANDING）
+TARGET_POSES = ["squat", "knee_propping", "SL_forward_stepping"]
 
 try:
     while display_running:
@@ -260,7 +307,6 @@ try:
                 mp_pose.PoseLandmark.RIGHT_ANKLE.value,mp_pose.PoseLandmark.LEFT_ANKLE.value,
             ]
 
-            # ── 繪製骨架（永遠繪製，不論角度是否計算成功）──
             draw_skeleton(color_image, lm, w, h)
 
             if min(lm[i].visibility for i in required) >= 0.4:
@@ -293,11 +339,9 @@ try:
                     foot_height_diff = np.mean(foot_height_diff_buf)
                     knee_angle_std   = float(np.std(list(knee_angle_buf))) if len(knee_angle_buf) >= 4 else 0.0
 
-                    # ── 膝蓋角度弧線 ──────────────────────
                     draw_angle_arc(color_image, r_knee, r_ka, color=(255, 220, 0))
                     draw_angle_arc(color_image, l_knee, l_ka, color=(255, 220, 0))
 
-                    # ── 角度文字標注 ──────────────────────
                     cv2.putText(color_image, f"{r_ka:.0f}",
                                 (r_knee[0] + 30, r_knee[1]),
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 220, 0), 1, cv2.LINE_AA)
@@ -328,22 +372,32 @@ try:
                             pose_start_time = time.time()
                             print(f"\n📡 [狀態變更] → {current_state}  (膝蓋角度: {knee_angle:.1f}°)")
 
+                            # ── MQTT：偵測到新的指定動作就送一次 ──────
+                            if detected_pose in TARGET_POSES and last_sent_pose != detected_pose:
+                                send_pose_result(detected_pose)
+                                last_sent_pose = detected_pose
+                            elif detected_pose == "STANDING":
+                                # 回到 STANDING 時重置，等待下一次新動作
+                                last_sent_pose = None
+
                         if pose_start_time:
                             duration = time.time() - pose_start_time
 
-        # ── 繪製 HUD ──────────────────────────────────────
         draw_hud(color_image, knee_angle, hip_depth_diff, knee_diff,
                  foot_height_diff, detected_pose, ai_confidence, duration)
 
         cv2.imshow("ITRI Pose Monitor", color_image)
 
         key = cv2.waitKey(1) & 0xFF
-        if key == ord('q') or key == 27:   # Q 或 ESC 離開
+        if key == ord('q') or key == 27:
             print("\n👋 使用者按下 Q，程式結束。")
             break
 
 except KeyboardInterrupt:
     print("\n👋 Ctrl+C 終止。")
 finally:
+    display_running = False
+    mqtt_client.loop_stop()
+    mqtt_client.disconnect()
     pipeline.stop()
     cv2.destroyAllWindows()
